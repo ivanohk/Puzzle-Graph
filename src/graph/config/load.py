@@ -1,5 +1,5 @@
 from torch_geometric.loader import DataLoader, NeighborLoader
-from registry.registry import Registry
+from graph.registry.registry import Registry
 
 
 LOADERS = Registry() #creao registry for data loaders

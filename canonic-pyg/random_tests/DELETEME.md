@@ -1,0 +1,1 @@
+# Eliminare l'intera cartella

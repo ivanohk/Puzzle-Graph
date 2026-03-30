@@ -1,0 +1,1 @@
+# Semplice test di BGRL (necessario per la PR ufficiale)

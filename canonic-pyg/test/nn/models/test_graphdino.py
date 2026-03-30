@@ -1,0 +1,1 @@
+# Semplice test di GraphDINO (necessario per la PR ufficiale)

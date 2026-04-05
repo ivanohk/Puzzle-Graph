@@ -1,6 +1,5 @@
 # Puzzle-Graph
 
-
 Nota: per la struttura di canonic-pyg/ è stato preso come riferimento 'deep_graph_infomax.py' in PyG
 
 Nella versione ufficiale GIN va importato da torch_geometric e la EMA va calcolata inline

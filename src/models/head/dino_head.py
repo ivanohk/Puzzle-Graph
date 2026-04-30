@@ -16,7 +16,6 @@ class DINOHead(nn.Module):
         self.teacher_temp = teacher_temp
         self.center_momentum = center_momentum
 
-        # Projector
         self.projector = Sequential(
             Linear(hidden_dim, proj_hidden),
             BN(proj_hidden),
@@ -24,14 +23,11 @@ class DINOHead(nn.Module):
             Linear(proj_hidden, bottleneck_dim),
         )
 
-        # Prototype scorer
-        self.proto = nn.utils.weight_norm(
-            Linear(bottleneck_dim, n_prototypes, bias=False)
-        )
-        self.proto.weight_g.data.fill_(1)
-        self.proto.weight_g.requires_grad = False
+        # weight_norm keeps prototype rows unit-norm; using parametrizations API
+        # since the old weight_norm is deprecated and breaks deepcopy.
+        proto_linear = Linear(bottleneck_dim, n_prototypes, bias=False)
+        self.proto = nn.utils.parametrizations.weight_norm(proto_linear, dim=0)
 
-        # Centering buffer
         self.register_buffer("center", torch.zeros(1, n_prototypes))
 
     def forward(self, x, use_teacher_temp=False):

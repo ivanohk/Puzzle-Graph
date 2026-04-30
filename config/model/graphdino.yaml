@@ -1,0 +1,19 @@
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+
+head:
+  name: dino
+  proj_hidden: 512
+  bottleneck_dim: 256
+  n_prototypes: 65536
+  student_temp: 0.1
+  teacher_temp: 0.04
+  center_momentum: 0.9
+
+ema_tau: 0.996
+
+augment:
+  - {name: edge_drop, p: 0.3}
+  - {name: feat_mask, p: 0.2}

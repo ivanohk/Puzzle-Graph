@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn import Sequential, Linear, ReLU, BatchNorm1d as BN
 
 
-from src.registry.registry import HEADS
+from src.registry import HEADS
 
 @HEADS.register("dino")
 class DINOHead(nn.Module):

@@ -1,4 +1,4 @@
-"""DINOTrainer: orchestrates one epoch of DINO self-distillation."""
+"""DINOTrainer: orchestrates one epoch of SSL self-distillation."""
 
 from __future__ import annotations
 
@@ -8,11 +8,15 @@ import torch
 from torch.optim import Optimizer
 from torch_geometric.loader import DataLoader
 
-from src.utils.ema import update_ema_params
+from src.models.model_types.base import BaseModel
 
 
 class DINOTrainer:
     """Stateless trainer — owns no model or optimizer state.
+
+    Works with any BaseModel subclass: calls model.student_parameters() for
+    gradient clipping and model.post_step() for per-batch housekeeping (EMA,
+    centering, etc.), so no DINO-specific attributes are accessed directly.
 
     Args:
         grad_clip_norm: Clip student gradient norm to this value.
@@ -24,10 +28,9 @@ class DINOTrainer:
 
     def train_epoch(
         self,
-        model: torch.nn.Module,
+        model: BaseModel,
         loader: DataLoader,
         optimizer: Optimizer,
-        ema_tau: float,
         device: torch.device | str = "cpu",
     ) -> float:
         """Run a full training epoch and return the average loss."""
@@ -45,18 +48,12 @@ class DINOTrainer:
 
             if self.grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
-                    list(model.student_enc.parameters())
-                    + list(model.student_head.parameters()),
+                    list(model.student_parameters()),
                     self.grad_clip_norm,
                 )
 
             optimizer.step()
-
-            update_ema_params(model.student_enc, model.teacher_enc, ema_tau)
-            update_ema_params(model.student_head, model.teacher_head, ema_tau)
-
-            if model.last_teacher_out is not None:
-                model.student_head.update_center(model.last_teacher_out)
+            model.post_step()
 
             total_loss += loss.item()
             n_batches += 1

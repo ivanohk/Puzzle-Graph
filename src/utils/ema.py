@@ -1,4 +1,4 @@
-import numpy as np
+import math
 import torch
 from torch import nn
 
@@ -17,8 +17,8 @@ def update_ema_params(student: nn.Module, teacher: nn.Module, tau: float):
 
 class EMA:
     """Scalar EMA with cosine-annealed alpha."""
-    def __init__(self, alpha, epochs) -> None:
-        super().__init__()
+    def __init__(self, alpha: float, epochs: int) -> None:
+        assert epochs > 0, "epochs must be > 0"
         self.alpha = alpha
         self.steps = 0
         self.total_steps = epochs
@@ -26,11 +26,8 @@ class EMA:
     def update_average(self, old, new):
         if old is None:
             return new
-        
-        alpha = 1 - (1 - self.alpha) * (np.cos(np.pi * self.steps / self.total_steps) + 1) / 2.0
 
+        alpha = 1 - (1 - self.alpha) * (math.cos(math.pi * self.steps / self.total_steps) + 1) / 2.0
         self.steps += 1
 
-        ema = alpha * old + (1 - alpha) * new
-
-        return ema
+        return alpha * old + (1 - alpha) * new

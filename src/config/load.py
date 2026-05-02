@@ -1,8 +1,6 @@
 from torch_geometric.loader import DataLoader, NeighborLoader
-from registry.registry import Registry
+from src.registry import LOADERS
 
-
-LOADERS = Registry()
 
 @LOADERS.register("graph")
 def build_graph_loader(*, dataset, params):

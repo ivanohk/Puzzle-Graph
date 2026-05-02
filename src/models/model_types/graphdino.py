@@ -2,34 +2,37 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 import torch
 from torch import nn, Tensor
 from torch_geometric.data import Data
 
 from .base import BaseModel
-from src.registry.registry import ENCODERS, HEADS
-from src.data.dino_augmentations import compose
+from src.registry import ENCODERS, HEADS
+from src.augmentation import compose
+from src.config.schema import EncoderConfig, GraphDINOConfig, HeadConfig
+from src.utils import update_ema_params
 
 
 class GraphDINO(BaseModel):
     """
     Args:
-        config: Config dict (see graphdino.yaml).
+        config: Config dict (see graphdino.yaml); validated against GraphDINOConfig.
         in_channels: Node feature size, resolved from the dataset at runtime.
     """
 
     def __init__(self, config: Dict, in_channels: int):
         super().__init__(config)
+        cfg = GraphDINOConfig.from_dict(config)  # validates all fields at load time
 
-        self.student_enc = self._build_encoder(config["encoder"], in_channels)
-        self.student_head = self._build_head(config["head"], config["encoder"]["hidden_dim"])
+        self.student_enc = self._build_encoder(cfg.encoder, in_channels)
+        self.student_head = self._build_head(cfg.head, cfg.encoder.hidden_dim)
 
         # Build fresh instances rather than deepcopy: weight_norm creates non-leaf
         # tensors that break copy.deepcopy.
-        self.teacher_enc = self._build_encoder(config["encoder"], in_channels)
-        self.teacher_head = self._build_head(config["head"], config["encoder"]["hidden_dim"])
+        self.teacher_enc = self._build_encoder(cfg.encoder, in_channels)
+        self.teacher_head = self._build_head(cfg.head, cfg.encoder.hidden_dim)
         self.teacher_enc.load_state_dict(self.student_enc.state_dict())
         self.teacher_head.load_state_dict(self.student_head.state_dict())
         for p in self.teacher_enc.parameters():
@@ -37,26 +40,23 @@ class GraphDINO(BaseModel):
         for p in self.teacher_head.parameters():
             p.requires_grad = False
 
-        self.aug_list: List[Tuple[str, dict]] = []
-        for aug_cfg in config.get("augment", []):
-            aug_cfg = dict(aug_cfg)
-            name = aug_cfg.pop("name")
-            self.aug_list.append((name, aug_cfg))
+        self.aug_list: List[Tuple[str, dict]] = [
+            (a.name, a.kwargs) for a in cfg.augment
+        ]
+        self._ema_tau: float = cfg.ema_tau
 
-        # Stored during forward so the trainer can call update_center after each step.
+        # Stored during forward so post_step can call update_center.
         self.last_teacher_out: Tensor | None = None
 
     @staticmethod
-    def _build_encoder(enc_cfg: Dict, in_channels: int) -> nn.Module:
-        cfg = dict(enc_cfg)
-        name = cfg.pop("name")
-        return ENCODERS.build(name, in_channels=in_channels, **cfg)
+    def _build_encoder(enc_cfg: EncoderConfig, in_channels: int) -> nn.Module:
+        kwargs = {k: v for k, v in vars(enc_cfg).items() if k != "name"}
+        return ENCODERS.build(enc_cfg.name, in_channels=in_channels, **kwargs)
 
     @staticmethod
-    def _build_head(head_cfg: Dict, hidden_dim: int) -> nn.Module:
-        cfg = dict(head_cfg)
-        name = cfg.pop("name")
-        return HEADS.build(name, hidden_dim=hidden_dim, **cfg)
+    def _build_head(head_cfg: HeadConfig, hidden_dim: int) -> nn.Module:
+        kwargs = {k: v for k, v in vars(head_cfg).items() if k != "name"}
+        return HEADS.build(head_cfg.name, hidden_dim=hidden_dim, **kwargs)
 
     def forward(self, data: Data) -> Tuple[Tensor, Tensor]:
         """
@@ -92,3 +92,15 @@ class GraphDINO(BaseModel):
             ).detach()
 
         return embeddings, loss
+
+    def student_parameters(self) -> Iterator[nn.Parameter]:
+        """Parameters to optimize; passed to the optimizer and gradient clipper."""
+        yield from self.student_enc.parameters()
+        yield from self.student_head.parameters()
+
+    def post_step(self) -> None:
+        """EMA teacher update and prototype center update after each optimizer step."""
+        update_ema_params(self.student_enc, self.teacher_enc, self._ema_tau)
+        update_ema_params(self.student_head, self.teacher_head, self._ema_tau)
+        if self.last_teacher_out is not None:
+            self.student_head.update_center(self.last_teacher_out)

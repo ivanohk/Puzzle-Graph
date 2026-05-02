@@ -2,7 +2,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import k_hop_subgraph
 
-from src.registry.registry import AUGMENTS
+from src.registry import AUGMENTS
 
 
 @AUGMENTS.register("edge_drop")
@@ -27,7 +27,6 @@ def edge_add(data: Data, p=0.1):
 
 @AUGMENTS.register("subgraph")
 def subgraph(data: Data, num_hops=2):
-    # Extracts a k-hop subgraph around a randomly sampled seed node.
     assert data.edge_index is not None
     assert data.num_nodes is not None
     n = data.num_nodes
@@ -46,7 +45,6 @@ def subgraph(data: Data, num_hops=2):
 
 @AUGMENTS.register("feat_mask")
 def feat_mask(data: Data, p=0.2):
-    # Masks entire feature dimensions, not individual node-feature pairs.
     assert data.x is not None
     mask = (torch.rand(data.x.size(1), device=data.x.device) > p).float()
     return Data(x=data.x * mask, edge_index=data.edge_index, batch=data.batch)
@@ -61,7 +59,6 @@ def feat_noise(data: Data, std=0.1):
 
 @AUGMENTS.register("feat_shuffle")
 def feat_shuffle(data: Data, p=0.1):
-    # Swaps features between a random subset of node pairs.
     assert data.x is not None
     n = data.x.size(0)
     perm = torch.randperm(n, device=data.x.device)
@@ -69,9 +66,3 @@ def feat_shuffle(data: Data, p=0.1):
     x = data.x.clone()
     x[node_mask] = data.x[perm[node_mask]]
     return Data(x=x, edge_index=data.edge_index, batch=data.batch)
-
-
-def compose(data: Data, augments: list):
-    for name, kwargs in augments:
-        data = AUGMENTS.build(name, data=data, **kwargs)
-    return data

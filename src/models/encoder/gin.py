@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import Sequential, Linear, ReLU, BatchNorm1d as BN
 from torch_geometric.nn import GINConv, global_add_pool
 
-from src.registry.registry import ENCODERS
+from src.registry import ENCODERS
 
 
 class GINLayer(nn.Module):

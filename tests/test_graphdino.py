@@ -18,10 +18,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Force module registration by importing the files that call @register
-import src.models.encoder.gin          # registers "gin" in ENCODERS
-import src.models.head.dino_head       # registers "dino" in HEADS
-import src.data.dino_augmentations     # registers augmentations
+# Importing src.models triggers registration of all encoders, heads, and
+# augmentations as a side-effect of the package __init__ chain.
+from src.models import GraphDINO
+from src.training import DINOTrainer
+from src.utils import update_ema_params
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -71,41 +72,12 @@ class TestGraphDINO:
     """Tests for the GraphDINO model."""
 
     def setup_method(self):
-        # Import here so registration side-effects have already happened
-        # Use importlib to handle the hyphen in 'model-types'
-        import importlib
-        spec = importlib.util.spec_from_file_location(
-            "graphdino",
-            os.path.join(ROOT, "src", "models", "model-types", "graphdino.py"),
-        )
-        mod = importlib.util.module_from_spec(spec)
-
-        # Temporarily make 'base' importable for the relative import
-        base_spec = importlib.util.spec_from_file_location(
-            "base",
-            os.path.join(ROOT, "src", "models", "model-types", "base.py"),
-        )
-        base_mod = importlib.util.module_from_spec(base_spec)
-        base_spec.loader.exec_module(base_mod)
-
-        # Create a fake package so relative imports work
-        import types
-        pkg = types.ModuleType("src.models.model-types")
-        pkg.__path__ = [os.path.join(ROOT, "src", "models", "model-types")]
-        sys.modules["src.models.model-types"] = pkg
-        sys.modules["src.models.model-types.base"] = base_mod
-
-        # Now we can set the package attribute and load the module
-        mod.__package__ = "src.models.model-types"
-        spec.loader.exec_module(mod)
-
-        self.GraphDINO = mod.GraphDINO
         self.config = _make_config()
         self.in_channels = 7
 
     def test_instantiation(self):
         """Model builds without error from a config dict."""
-        model = self.GraphDINO(self.config, in_channels=self.in_channels)
+        model = GraphDINO(self.config, in_channels=self.in_channels)
         assert model.student_enc is not None
         assert model.teacher_enc is not None
         assert model.student_head is not None
@@ -113,7 +85,7 @@ class TestGraphDINO:
 
     def test_teacher_is_frozen(self):
         """All teacher parameters have requires_grad=False."""
-        model = self.GraphDINO(self.config, in_channels=self.in_channels)
+        model = GraphDINO(self.config, in_channels=self.in_channels)
         for p in model.teacher_enc.parameters():
             assert not p.requires_grad
         for p in model.teacher_head.parameters():
@@ -121,7 +93,7 @@ class TestGraphDINO:
 
     def test_forward_shapes(self):
         """forward() returns (embeddings, loss) with correct shapes."""
-        model = self.GraphDINO(self.config, in_channels=self.in_channels)
+        model = GraphDINO(self.config, in_channels=self.in_channels)
         batch = _make_batch(n_features=self.in_channels)
         emb, loss = model(batch)
 
@@ -133,20 +105,33 @@ class TestGraphDINO:
 
     def test_last_teacher_out_stored(self):
         """forward() stashes teacher output for centering."""
-        model = self.GraphDINO(self.config, in_channels=self.in_channels)
+        model = GraphDINO(self.config, in_channels=self.in_channels)
         batch = _make_batch(n_features=self.in_channels)
         model(batch)
         assert model.last_teacher_out is not None
         # Should be 2× batch_size (view1 + view2)
         assert model.last_teacher_out.shape[0] == 2 * 4
 
+    def test_invalid_config_raises(self):
+        """GraphDINOConfig.from_dict raises ValueError for bad values."""
+        bad = _make_config()
+        bad["encoder"]["hidden_dim"] = -1
+        with pytest.raises(ValueError, match="hidden_dim"):
+            GraphDINO(bad, in_channels=self.in_channels)
+
+    def test_student_parameters_excludes_teacher(self):
+        """student_parameters() yields only student params, not teacher params."""
+        model = GraphDINO(self.config, in_channels=self.in_channels)
+        student_ids = {id(p) for p in model.student_parameters()}
+        teacher_ids = {id(p) for p in model.teacher_enc.parameters()} | \
+                      {id(p) for p in model.teacher_head.parameters()}
+        assert student_ids.isdisjoint(teacher_ids)
+
 
 class TestEMAUpdate:
     """Tests for the parameter-level EMA utility."""
 
     def test_teacher_moves_toward_student(self):
-        from src.utils.ema import update_ema_params
-
         student = torch.nn.Linear(4, 4)
         teacher = torch.nn.Linear(4, 4)
         # Set teacher weights to zero
@@ -166,42 +151,12 @@ class TestDINOTrainer:
     """Integration test: run 1 epoch on tiny random data."""
 
     def test_train_epoch_runs(self):
-        import importlib, types
-
-        # Same import dance for hyphenated directory
-        base_spec = importlib.util.spec_from_file_location(
-            "base",
-            os.path.join(ROOT, "src", "models", "model-types", "base.py"),
-        )
-        base_mod = importlib.util.module_from_spec(base_spec)
-        base_spec.loader.exec_module(base_mod)
-
-        pkg = types.ModuleType("src.models.model-types")
-        pkg.__path__ = [os.path.join(ROOT, "src", "models", "model-types")]
-        sys.modules["src.models.model-types"] = pkg
-        sys.modules["src.models.model-types.base"] = base_mod
-
-        spec = importlib.util.spec_from_file_location(
-            "graphdino",
-            os.path.join(ROOT, "src", "models", "model-types", "graphdino.py"),
-        )
-        mod = importlib.util.module_from_spec(spec)
-        mod.__package__ = "src.models.model-types"
-        spec.loader.exec_module(mod)
-        GraphDINO = mod.GraphDINO
-
-        from src.training.trainer import DINOTrainer
         from torch_geometric.loader import DataLoader
 
         config = _make_config()
         model = GraphDINO(config, in_channels=7)
 
-        # Only student parameters go into the optimiser
-        optimizer = torch.optim.Adam(
-            list(model.student_enc.parameters())
-            + list(model.student_head.parameters()),
-            lr=1e-3,
-        )
+        optimizer = torch.optim.Adam(model.student_parameters(), lr=1e-3)
 
         # Tiny dataset
         graphs = [
@@ -217,9 +172,7 @@ class TestDINOTrainer:
         loader = DataLoader(graphs, batch_size=4)
 
         trainer = DINOTrainer(grad_clip_norm=3.0)
-        avg_loss = trainer.train_epoch(
-            model, loader, optimizer, ema_tau=config["ema_tau"]
-        )
+        avg_loss = trainer.train_epoch(model, loader, optimizer)
 
         assert isinstance(avg_loss, float)
         assert not (avg_loss != avg_loss)  # not NaN

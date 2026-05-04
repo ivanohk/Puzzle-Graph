@@ -8,7 +8,7 @@ import torch
 from torch.optim import Optimizer
 from torch_geometric.loader import DataLoader
 
-from src.models.model_types.base import BaseModel
+from src.core.model import BaseModel
 
 
 class DINOTrainer:

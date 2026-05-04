@@ -8,7 +8,7 @@ import torch
 from torch import nn, Tensor
 from torch_geometric.data import Data
 
-from .base import BaseModel
+from src.core.model import BaseModel
 from src.registry import ENCODERS, HEADS
 from src.augmentation import compose
 from src.config.schema import EncoderConfig, GraphDINOConfig, HeadConfig
@@ -94,7 +94,6 @@ class GraphDINO(BaseModel):
         return embeddings, loss
 
     def student_parameters(self) -> Iterator[nn.Parameter]:
-        """Parameters to optimize; passed to the optimizer and gradient clipper."""
         yield from self.student_enc.parameters()
         yield from self.student_head.parameters()
 

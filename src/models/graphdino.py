@@ -8,14 +8,14 @@ import torch
 from torch import nn, Tensor
 from torch_geometric.data import Data
 
-from src.core.model import BaseModel
+from src.core.model import BaseSSLModel
 from src.registry import ENCODERS, HEADS
 from src.augmentation import compose
 from src.config.schema import EncoderConfig, GraphDINOConfig, HeadConfig
 from src.utils import update_ema_params
 
 
-class GraphDINO(BaseModel):
+class GraphDINO(BaseSSLModel):
     """
     Args:
         config: Config dict (see graphdino.yaml); validated against GraphDINOConfig.
@@ -23,8 +23,8 @@ class GraphDINO(BaseModel):
     """
 
     def __init__(self, config: Dict, in_channels: int):
-        super().__init__(config)
-        cfg = GraphDINOConfig.from_dict(config)  # validates all fields at load time
+        super().__init__()
+        cfg = GraphDINOConfig.from_dict(config)
 
         self.student_enc = self._build_encoder(cfg.encoder, in_channels)
         self.student_head = self._build_head(cfg.head, cfg.encoder.hidden_dim)
@@ -45,8 +45,7 @@ class GraphDINO(BaseModel):
         ]
         self._ema_tau: float = cfg.ema_tau
 
-        # Stored during forward so post_step can call update_center.
-        self.last_teacher_out: Tensor | None = None
+        self._last_teacher_out: Tensor | None = None
 
     @staticmethod
     def _build_encoder(enc_cfg: EncoderConfig, in_channels: int) -> nn.Module:
@@ -58,40 +57,39 @@ class GraphDINO(BaseModel):
         kwargs = {k: v for k, v in vars(head_cfg).items() if k != "name"}
         return HEADS.build(head_cfg.name, hidden_dim=hidden_dim, **kwargs)
 
-    def forward(self, data: Data) -> Tuple[Tensor, Tensor]:
-        """
-        Returns:
-            embeddings: Student encoding of the original graph, detached.
-            loss: Symmetric DINO cross-entropy loss.
-        """
+    def forward(self, data: Data) -> Tensor:
+        """Return student embeddings (detached) for evaluation."""
+        with torch.no_grad():
+            return self.student_enc(data.x, data.edge_index, data.batch).detach()
+
+    def compute_loss(self, data: Data) -> Tensor:
+        """Compute symmetric DINO cross-entropy loss over two augmented views."""
         view1 = compose(data, self.aug_list)
         view2 = compose(data, self.aug_list)
 
-        s_emb1 = self.student_enc(view1.x, view1.edge_index, view1.batch)
-        s_emb2 = self.student_enc(view2.x, view2.edge_index, view2.batch)
-        s_logits1 = self.student_head(s_emb1)
-        s_logits2 = self.student_head(s_emb2)
-
-        with torch.no_grad():
-            t_emb1 = self.teacher_enc(view1.x, view1.edge_index, view1.batch)
-            t_emb2 = self.teacher_enc(view2.x, view2.edge_index, view2.batch)
-            t_targets1 = self.teacher_head(t_emb1, use_teacher_temp=True)
-            t_targets2 = self.teacher_head(t_emb2, use_teacher_temp=True)
-
-        self.last_teacher_out = torch.cat([t_targets1, t_targets2], dim=0)
-
-        # L = -0.5 * (t2 * log(s1) + t1 * log(s2))
-        loss = -0.5 * (
-            (t_targets2 * s_logits1).sum(dim=-1).mean()
-            + (t_targets1 * s_logits2).sum(dim=-1).mean()
+        s_logits1 = self.student_head(
+            self.student_enc(view1.x, view1.edge_index, view1.batch)
+        )
+        s_logits2 = self.student_head(
+            self.student_enc(view2.x, view2.edge_index, view2.batch)
         )
 
         with torch.no_grad():
-            embeddings = self.student_enc(
-                data.x, data.edge_index, data.batch
-            ).detach()
+            t_targets1 = self.teacher_head(
+                self.teacher_enc(view1.x, view1.edge_index, view1.batch),
+                use_teacher_temp=True,
+            )
+            t_targets2 = self.teacher_head(
+                self.teacher_enc(view2.x, view2.edge_index, view2.batch),
+                use_teacher_temp=True,
+            )
 
-        return embeddings, loss
+        self._last_teacher_out = torch.cat([t_targets1, t_targets2], dim=0)
+
+        return -0.5 * (
+            (t_targets2 * s_logits1).sum(dim=-1).mean()
+            + (t_targets1 * s_logits2).sum(dim=-1).mean()
+        )
 
     def student_parameters(self) -> Iterator[nn.Parameter]:
         yield from self.student_enc.parameters()
@@ -101,5 +99,5 @@ class GraphDINO(BaseModel):
         """EMA teacher update and prototype center update after each optimizer step."""
         update_ema_params(self.student_enc, self.teacher_enc, self._ema_tau)
         update_ema_params(self.student_head, self.teacher_head, self._ema_tau)
-        if self.last_teacher_out is not None:
-            self.student_head.update_center(self.last_teacher_out)
+        if self._last_teacher_out is not None:
+            self.student_head.update_center(self._last_teacher_out)

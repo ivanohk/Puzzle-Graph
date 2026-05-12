@@ -40,6 +40,8 @@ class HeadConfig:
     student_temp: float = 0.1
     teacher_temp: float = 0.04
     center_momentum: float = 0.9
+    warmup_teacher_temp: float = 0.04
+    warmup_teacher_temp_epochs: int = 0
 
     def __post_init__(self):
         for fname, val in [
@@ -51,6 +53,17 @@ class HeadConfig:
                 raise ValueError(f"{fname} must be > 0, got {val}")
         if self.student_temp <= 0 or self.teacher_temp <= 0:
             raise ValueError("student_temp and teacher_temp must be > 0")
+        if self.warmup_teacher_temp <= 0:
+            raise ValueError("warmup_teacher_temp must be > 0")
+        if self.warmup_teacher_temp > self.teacher_temp:
+            raise ValueError(
+                f"warmup_teacher_temp ({self.warmup_teacher_temp}) must be "
+                f"<= teacher_temp ({self.teacher_temp})"
+            )
+        if self.warmup_teacher_temp_epochs < 0:
+            raise ValueError(
+                f"warmup_teacher_temp_epochs must be >= 0, got {self.warmup_teacher_temp_epochs}"
+            )
         if not (0.0 <= self.center_momentum < 1.0):
             raise ValueError(
                 f"center_momentum must be in [0, 1), got {self.center_momentum}"
@@ -81,10 +94,25 @@ class GraphDINOConfig:
     head: HeadConfig
     augment: List[AugmentConfig] = field(default_factory=list)
     ema_tau: float = 0.996
+    ema_tau_base: float = 0.996
+    total_steps: int = 0
+    freeze_last_layer_epochs: int = 1
 
     def __post_init__(self):
-        if not (0.0 < self.ema_tau < 1.0):
-            raise ValueError(f"ema_tau must be in (0, 1), got {self.ema_tau}")
+        if not (0.0 < self.ema_tau <= 1.0):
+            raise ValueError(f"ema_tau must be in (0, 1], got {self.ema_tau}")
+        if not (0.0 < self.ema_tau_base <= 1.0):
+            raise ValueError(f"ema_tau_base must be in (0, 1], got {self.ema_tau_base}")
+        if self.ema_tau_base > self.ema_tau:
+            raise ValueError(
+                f"ema_tau_base ({self.ema_tau_base}) must be <= ema_tau ({self.ema_tau})"
+            )
+        if self.total_steps < 0:
+            raise ValueError(f"total_steps must be >= 0, got {self.total_steps}")
+        if self.freeze_last_layer_epochs < 0:
+            raise ValueError(
+                f"freeze_last_layer_epochs must be >= 0, got {self.freeze_last_layer_epochs}"
+            )
 
     @classmethod
     def from_dict(cls, d: dict) -> GraphDINOConfig:
@@ -96,4 +124,7 @@ class GraphDINOConfig:
             head=head,
             augment=augment,
             ema_tau=d.get("ema_tau", 0.996),
+            ema_tau_base=d.get("ema_tau_base", d.get("ema_tau", 0.996)),
+            total_steps=d.get("total_steps", 0),
+            freeze_last_layer_epochs=d.get("freeze_last_layer_epochs", 1),
         )

@@ -9,10 +9,15 @@ head:
   bottleneck_dim: 256
   n_prototypes: 65536
   student_temp: 0.1
-  teacher_temp: 0.04
+  teacher_temp: 0.07
   center_momentum: 0.9
+  warmup_teacher_temp: 0.04
+  warmup_teacher_temp_epochs: 30
 
 ema_tau: 0.996
+ema_tau_base: 0.996
+total_steps: 0
+freeze_last_layer_epochs: 1
 
 augment:
   - {name: edge_drop, p: 0.3}

@@ -9,10 +9,12 @@ from torch import nn, Tensor
 from torch_geometric.data import Data
 
 from src.core.model import BaseSSLModel
+from src.losses.dino import DINOLoss
 from src.registry import ENCODERS, HEADS
 from src.augmentation import compose
 from src.config.schema import EncoderConfig, GraphDINOConfig, HeadConfig
 from src.utils import update_ema_params
+from src.utils.schedulers import CosineEMAScheduler
 
 
 class GraphDINO(BaseSSLModel):
@@ -43,9 +45,27 @@ class GraphDINO(BaseSSLModel):
         self.aug_list: List[Tuple[str, dict]] = [
             (a.name, a.kwargs) for a in cfg.augment
         ]
-        self._ema_tau: float = cfg.ema_tau
+        self._ema_tau: float = cfg.ema_tau_base
+        self._loss_fn = DINOLoss()
+
+        self._freeze_last_layer_epochs: int = cfg.freeze_last_layer_epochs
+        self._epoch: int = 0
+
+        if cfg.total_steps > 0 and cfg.ema_tau_base < cfg.ema_tau:
+            self._ema_scheduler: CosineEMAScheduler | None = CosineEMAScheduler(
+                ema_base=cfg.ema_tau_base,
+                ema_end=cfg.ema_tau,
+                total_steps=cfg.total_steps,
+            )
+        else:
+            self._ema_scheduler = None
+        self._step: int = 0
 
         self._last_teacher_out: Tensor | None = None
+
+    @property
+    def last_teacher_out(self) -> Tensor | None:
+        return self._last_teacher_out
 
     @staticmethod
     def _build_encoder(enc_cfg: EncoderConfig, in_channels: int) -> nn.Module:
@@ -58,12 +78,10 @@ class GraphDINO(BaseSSLModel):
         return HEADS.build(head_cfg.name, hidden_dim=hidden_dim, **kwargs)
 
     def forward(self, data: Data) -> Tensor:
-        """Return student embeddings (detached) for evaluation."""
         with torch.no_grad():
             return self.student_enc(data.x, data.edge_index, data.batch).detach()
 
     def compute_loss(self, data: Data) -> Tensor:
-        """Compute symmetric DINO cross-entropy loss over two augmented views."""
         view1 = compose(data, self.aug_list)
         view2 = compose(data, self.aug_list)
 
@@ -86,18 +104,28 @@ class GraphDINO(BaseSSLModel):
 
         self._last_teacher_out = torch.cat([t_targets1, t_targets2], dim=0)
 
-        return -0.5 * (
-            (t_targets2 * s_logits1).sum(dim=-1).mean()
-            + (t_targets1 * s_logits2).sum(dim=-1).mean()
-        )
+        return self._loss_fn(s_logits1, s_logits2, t_targets1, t_targets2)
 
     def student_parameters(self) -> Iterator[nn.Parameter]:
         yield from self.student_enc.parameters()
         yield from self.student_head.parameters()
 
+    def post_backward(self) -> None:
+        if self._epoch < self._freeze_last_layer_epochs:
+            self.student_head.cancel_last_layer_gradients()
+
     def post_step(self) -> None:
-        """EMA teacher update and prototype center update after each optimizer step."""
+        if self._ema_scheduler is not None:
+            self._ema_tau = self._ema_scheduler.get(self._step)
+        self._step += 1
+
         update_ema_params(self.student_enc, self.teacher_enc, self._ema_tau)
         update_ema_params(self.student_head, self.teacher_head, self._ema_tau)
         if self._last_teacher_out is not None:
             self.student_head.update_center(self._last_teacher_out)
+
+    def on_epoch_start(self, epoch: int) -> None:
+        self.teacher_head.set_epoch(epoch)
+
+    def on_epoch_end(self, epoch: int) -> None:
+        self._epoch = epoch + 1

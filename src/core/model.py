@@ -18,13 +18,18 @@ class BaseSSLModel(BaseModel):
     """Extension for self-supervised models.
 
     The Trainer loop is:
-        loss = model.compute_loss(batch)
-        loss.backward()
-        optimizer.step()
-        model.post_step()           # EMA, center updates, etc.
+        model.on_epoch_start(epoch)     # teacher temp warmup, etc.
+        for batch in loader:
+            loss = model.compute_loss(batch)
+            loss.backward()
+            clip_grad_norm_(...)
+            model.post_backward()       # freeze last layer, etc.
+            optimizer.step()
+            model.post_step()           # EMA, center updates, etc.
+        model.on_epoch_end(epoch)       # epoch counter, etc.
 
     For evaluation:
-        embeddings = model(batch)   # calls forward(), no grad needed
+        embeddings = model(batch)       # calls forward(), no grad needed
     """
 
     @abstractmethod
@@ -35,9 +40,17 @@ class BaseSSLModel(BaseModel):
     def student_parameters(self) -> Iterator[nn.Parameter]:
         """Parameters to optimize. Excludes frozen teacher/target parameters."""
 
-    def post_step(self) -> None:
-        """Post-optimizer housekeeping called by the Trainer after optimizer.step().
+    def post_backward(self) -> None:
+        """Called after backward() and grad clipping, before optimizer.step().
 
-        Override to implement EMA teacher updates, DINO center updates, etc.
-        Default is a no-op for models that don't need it.
+        Override to cancel gradients on specific parameters (e.g. DINO last layer freeze).
         """
+
+    def post_step(self) -> None:
+        """Called after optimizer.step(). Override for EMA updates, center updates, etc."""
+
+    def on_epoch_start(self, epoch: int) -> None:
+        """Called by Trainer at the start of each epoch before any batch."""
+
+    def on_epoch_end(self, epoch: int) -> None:
+        """Called by Trainer at the end of each epoch after all batches."""

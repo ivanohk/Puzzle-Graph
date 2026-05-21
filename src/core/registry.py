@@ -27,12 +27,15 @@ class Registry(Generic[T]):
             return fn
         return deco
 
-    def build(self, name: str, **kwargs) -> T:
+    def get_builder(self, name: str) -> Callable[..., T]:
         if name not in self._builders:
             raise KeyError(
                 f"Unknown component {name!r}. Available: {list(self._builders)}"
             )
-        return self._builders[name](**kwargs)
+        return self._builders[name]
+
+    def build(self, name: str, **kwargs) -> T:
+        return self.get_builder(name)(**kwargs)
 
     def __contains__(self, name: str) -> bool:
         return name in self._builders

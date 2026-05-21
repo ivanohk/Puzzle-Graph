@@ -1,0 +1,16 @@
+name: dgi
+
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+  pool: false
+
+corruption: shuffle_nodes
+shuffle_ratio: 0.1
+
+optimizer:
+  lr: 1.0e-3
+  min_lr: 1.0e-5
+  weight_decay: 1.0e-5
+  warmup_epochs: 75

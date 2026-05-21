@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import torch
 from torch import nn, Tensor
@@ -15,6 +15,7 @@ from src.augmentation import compose
 from src.config.schema import EncoderConfig, GraphDINOConfig, HeadConfig
 from src.utils import update_ema_params
 from src.utils.schedulers import CosineEMAScheduler
+from src.nn.pooling import pool_graph_embeddings
 
 
 class GraphDINO(BaseSSLModel):
@@ -42,9 +43,17 @@ class GraphDINO(BaseSSLModel):
         for p in self.teacher_head.parameters():
             p.requires_grad = False
 
-        self.aug_list: List[Tuple[str, dict]] = [
-            (a.name, a.kwargs) for a in cfg.augment
+        self.aug_list_teacher: List[Tuple[str, dict]] = [
+            (a.name, a.kwargs) for a in cfg.augment_teacher
         ]
+        self.aug_list_student: List[Tuple[str, dict]] = [
+            (a.name, a.kwargs) for a in cfg.augment_student
+        ]
+        self._n_views: int = cfg.n_views
+        self._n_global_views: int = cfg.n_global_views
+        # pool=True means the encoder returns graph-level embeddings; no batch_size crop needed
+        self._graph_level: bool = cfg.encoder.pool
+
         self._ema_tau: float = cfg.ema_tau_base
         self._loss_fn = DINOLoss()
 
@@ -79,32 +88,68 @@ class GraphDINO(BaseSSLModel):
 
     def forward(self, data: Data) -> Tensor:
         with torch.no_grad():
-            return self.student_enc(data.x, data.edge_index, data.batch).detach()
+            z = self.teacher_enc(data.x, data.edge_index, data.batch)
+            if self._graph_level:
+                z = pool_graph_embeddings(z, data.batch)
+            return z.detach()
+
+    def _encode(
+        self,
+        enc: nn.Module,
+        head: nn.Module,
+        view: Data,
+        batch_size: Optional[int],
+        use_teacher_temp: bool = False,
+    ) -> Tensor:
+        h = enc(view.x, view.edge_index, view.batch)
+        if self._graph_level:
+            h = pool_graph_embeddings(h, view.batch)
+        elif batch_size is not None:
+            h = h[:batch_size]
+        return head(h, use_teacher_temp=use_teacher_temp)
 
     def compute_loss(self, data: Data) -> Tensor:
-        view1 = compose(data, self.aug_list)
-        view2 = compose(data, self.aug_list)
+        # In mini-batch node training, protect the first batch_size seed nodes
+        # from destructive augmentations (e.g. node_drop).
+        batch_size: Optional[int] = getattr(data, "batch_size", None)
+        if self._graph_level:
+            batch_size = None
+        protected: Optional[Tensor] = None
+        if batch_size is not None:
+            _dev = data.x.device if data.x is not None else torch.device("cpu")
+            protected = torch.arange(batch_size, device=_dev)
 
-        s_logits1 = self.student_head(
-            self.student_enc(view1.x, view1.edge_index, view1.batch)
-        )
-        s_logits2 = self.student_head(
-            self.student_enc(view2.x, view2.edge_index, view2.batch)
-        )
+        # Global views: weak augmentation → fed to teacher and student.
+        global_views = [
+            compose(data, self.aug_list_teacher, protected_nodes=protected)
+            for _ in range(self._n_global_views)
+        ]
+        # Local views: strong augmentation → fed to student only.
+        local_views = [
+            compose(data, self.aug_list_student, protected_nodes=protected)
+            for _ in range(self._n_views - self._n_global_views)
+        ]
+        all_views = global_views + local_views
+
+        student_logits = [
+            self._encode(self.student_enc, self.student_head, v, batch_size)
+            for v in all_views
+        ]
 
         with torch.no_grad():
-            t_targets1 = self.teacher_head(
-                self.teacher_enc(view1.x, view1.edge_index, view1.batch),
-                use_teacher_temp=True,
-            )
-            t_targets2 = self.teacher_head(
-                self.teacher_enc(view2.x, view2.edge_index, view2.batch),
-                use_teacher_temp=True,
-            )
+            teacher_logits = [
+                self._encode(
+                    self.teacher_enc, self.teacher_head, v, batch_size,
+                    use_teacher_temp=True,
+                )
+                for v in global_views
+            ]
 
-        self._last_teacher_out = torch.cat([t_targets1, t_targets2], dim=0)
+        student_out = torch.cat(student_logits, dim=0)
+        teacher_out = torch.cat(teacher_logits, dim=0)
+        self._last_teacher_out = teacher_out
 
-        return self._loss_fn(s_logits1, s_logits2, t_targets1, t_targets2)
+        return self._loss_fn(student_out, teacher_out, self._n_global_views, self._n_views)
 
     def student_parameters(self) -> Iterator[nn.Parameter]:
         yield from self.student_enc.parameters()
@@ -120,9 +165,13 @@ class GraphDINO(BaseSSLModel):
         self._step += 1
 
         update_ema_params(self.student_enc, self.teacher_enc, self._ema_tau)
+        # Sync student center = teacher center before buffer copy so the copy
+        # is a no-op for the center buffer (ema.py copies buffers directly).
+        # This preserves the teacher center's history through the EMA sync.
+        self.student_head.center.copy_(self.teacher_head.center)
         update_ema_params(self.student_head, self.teacher_head, self._ema_tau)
         if self._last_teacher_out is not None:
-            self.student_head.update_center(self._last_teacher_out)
+            self.teacher_head.update_center(self._last_teacher_out)
 
     def on_epoch_start(self, epoch: int) -> None:
         self.teacher_head.set_epoch(epoch)

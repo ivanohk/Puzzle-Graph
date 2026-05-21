@@ -3,7 +3,7 @@
 import sys, os
 import pytest
 import torch
-from torch_geometric.data import Data, Batch
+from torch_geometric.data import Data
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
@@ -12,6 +12,11 @@ if ROOT not in sys.path:
 from src.models import GraphDINO
 from src.training import DINOTrainer
 from src.utils import update_ema_params
+from helpers import make_batch
+
+
+def _make_batch(n_graphs=4, n_nodes_per_graph=10, n_features=7):
+    return make_batch(n_graphs=n_graphs, n_nodes=n_nodes_per_graph, n_feat=n_features)
 
 
 def _make_config(**overrides):
@@ -32,7 +37,11 @@ def _make_config(**overrides):
             "warmup_teacher_temp": 0.04,
             "warmup_teacher_temp_epochs": 0,
         },
-        "augment": [
+        "augment_teacher": [
+            {"name": "edge_drop", "p": 0.2},
+            {"name": "feat_mask", "p": 0.1},
+        ],
+        "augment_student": [
             {"name": "edge_drop", "p": 0.3},
             {"name": "feat_mask", "p": 0.2},
         ],
@@ -41,16 +50,6 @@ def _make_config(**overrides):
     }
     cfg.update(overrides)
     return cfg
-
-
-def _make_batch(n_graphs=4, n_nodes_per_graph=10, n_features=7):
-    graphs = []
-    for _ in range(n_graphs):
-        n = n_nodes_per_graph
-        src = torch.randint(0, n, (n * 2,))
-        dst = torch.randint(0, n, (n * 2,))
-        graphs.append(Data(x=torch.randn(n, n_features), edge_index=torch.stack([src, dst])))
-    return Batch.from_data_list(graphs)
 
 
 class TestGraphDINO:

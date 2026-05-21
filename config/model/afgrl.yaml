@@ -1,0 +1,21 @@
+name: afgrl
+
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+  pool: false
+
+pred_hidden: 512
+ema_tau: 0.99
+ema_tau_end: 1.0
+total_steps: 0
+
+topk: 5
+num_centroids: 50
+num_kmeans: 4
+clus_num_iters: 20
+
+optimizer:
+  lr: 1.0e-2
+  weight_decay: 1.0e-5

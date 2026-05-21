@@ -1,0 +1,21 @@
+name: bgrl
+
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+  pool: false
+
+pred_hidden: 512
+ema_tau: 0.99
+ema_tau_end: 1.0
+total_steps: 0
+
+augment:
+  - {name: edge_drop, p: 0.2}
+  - {name: feat_mask, p: 0.2}
+
+optimizer:
+  lr: 5.0e-4
+  weight_decay: 1.0e-5
+  warmup_epochs: 30

@@ -1,7 +1,10 @@
+name: graphdino
+
 encoder:
   name: gin
   hidden_dim: 256
   num_layers: 3
+  pool: false
 
 head:
   name: dino
@@ -18,7 +21,21 @@ ema_tau: 0.996
 ema_tau_base: 0.996
 total_steps: 0
 freeze_last_layer_epochs: 1
+n_views: 4
+n_global_views: 2
 
-augment:
-  - {name: edge_drop, p: 0.3}
-  - {name: feat_mask, p: 0.2}
+augment_teacher:
+  - {name: node_drop, p: 0.10}
+  - {name: edge_drop, p: 0.20}
+  - {name: feat_mask, p: 0.10}
+
+augment_student:
+  - {name: node_drop, p: 0.20}
+  - {name: edge_drop, p: 0.30}
+  - {name: feat_mask, p: 0.30}
+
+optimizer:
+  lr: 1.25e-4
+  min_lr: 1.0e-6
+  weight_decay: 1.0e-5
+  warmup_steps: 1000

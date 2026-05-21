@@ -1,0 +1,21 @@
+name: vicreg
+
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+  pool: false
+
+proj_dim: 256
+invariance: 25.0
+variance: 25.0
+covariance: 1.0
+
+augment:
+  - {name: edge_drop, p: 0.2}
+  - {name: feat_mask, p: 0.1}
+
+optimizer:
+  lr: 5.0e-4
+  weight_decay: 1.0e-5
+  warmup_epochs: 20

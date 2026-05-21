@@ -1,0 +1,11 @@
+name: supervised
+
+encoder:
+  name: gin
+  hidden_dim: 256
+  num_layers: 3
+  pool: false
+
+optimizer:
+  lr: 1.0e-2
+  weight_decay: 5.0e-4

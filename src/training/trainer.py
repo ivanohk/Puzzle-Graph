@@ -8,7 +8,7 @@ import torch
 from torch.optim import Optimizer
 from torch_geometric.loader import DataLoader
 
-from src.core.model import BaseModel
+from src.core.model import BaseSSLModel
 from src.core.callback import Callback
 
 
@@ -36,7 +36,7 @@ class DINOTrainer:
 
     def train_epoch(
         self,
-        model: BaseModel,
+        model: BaseSSLModel,
         loader: DataLoader,
         optimizer: Optimizer,
         device: torch.device | str | None = None,
@@ -75,7 +75,7 @@ class DINOTrainer:
 
     def train(
         self,
-        model: BaseModel,
+        model: BaseSSLModel,
         loader: DataLoader,
         optimizer: Optimizer,
         num_epochs: int,

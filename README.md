@@ -1,33 +1,32 @@
 # Puzzle-Graph
 
-Libreria Python per Graph Machine Learning (GML) con PyTorch puro.
-Implementa i principali algoritmi SSL su grafi con un'architettura modulare e zero dipendenze da Lightning o Hydra.
+A modular Python library for **Self-Supervised Learning on graphs**, built on PyTorch and PyTorch Geometric. No Lightning, no Hydra — just clean, readable training loops you can step through with a debugger.
 
-## Modelli implementati
+> **Status:** Alpha. All models train end-to-end and pass tests, but large-scale benchmarks are still in progress.
 
-| Modello | Tipo | File |
+## Supported Methods
+
+| Method | Family | Paper |
 |---|---|---|
-| DGI | Mutual information maximization | `src/models/dgi.py` |
-| GraphCL | Contrastive (NT-Xent) | `src/models/graphcl.py` |
-| BGRL | Teacher-student + EMA | `src/models/bgrl.py` |
-| AFGRL | Augmentation-free + PositiveMiner | `src/models/afgrl.py` |
-| VICReg | Variance-Invariance-Covariance | `src/models/vicreg.py` |
-| Barlow Twins | Cross-correlation | `src/models/barlow_twins.py` |
-| GraphDINO | DINO adattato ai grafi | `src/models/graphdino.py` |
-| Supervised | Encoder + linear head (baseline) | `src/models/supervised.py` |
+| **DGI** | Mutual Information | Veličković et al., ICLR 2019 |
+| **GraphCL** | Contrastive (NT-Xent) | You et al., NeurIPS 2020 |
+| **BGRL** | Teacher-Student + EMA | Thakoor et al., ICLR 2022 |
+| **AFGRL** | Augmentation-Free Mining | Lee et al., AAAI 2022 |
+| **VICReg** | Variance-Invariance-Covariance | Bardes et al., ICLR 2022 |
+| **Barlow Twins** | Cross-Correlation | Zbontar et al., ICML 2021 |
+| **GraphDINO** | Self-Distillation | Adapted from Caron et al., ICCV 2021 |
 
-## API uniforme
+Plus a **Supervised** baseline (encoder + linear head) for comparison.
 
-Tutti i modelli usano la stessa firma:
+Encoder backbones are swappable: **GCN**, **GIN**, and **Graph Transformer** are included and registered via a simple decorator.
 
-```python
-model = ModelClass(config: dict, in_channels: int)
-# Supervised aggiunge num_classes
-model = Supervised(config, in_channels, num_classes)
-```
+## Quick Start
+
+Every model follows the same API:
 
 ```python
 from src.models import BGRL
+from src.training import DINOTrainer
 
 config = {
     "encoder": {"name": "gin", "hidden_dim": 256, "num_layers": 3, "pool": False},
@@ -36,45 +35,56 @@ config = {
 }
 
 model = BGRL(config, in_channels=dataset.num_features)
-loss = model.compute_loss(batch)
-loss.backward()
-optimizer.step()
-model.post_step()  # EMA update del teacher
+trainer = DINOTrainer(device="cuda")
+losses = trainer.train(model, loader, optimizer, num_epochs=100)
 ```
 
-## Dipendenze
+Models expose `compute_loss(batch)`, `post_backward()`, and `post_step()` hooks, so you can also write your own training loop if you prefer.
 
-- Python 3.10+, PyTorch, PyTorch Geometric
-- `faiss-cpu` (opzionale, richiesto solo da AFGRL)
-- `umap-learn`, `matplotlib`, `seaborn` (opzionali, per visualization)
+## Installation
 
-## Test
+```bash
+pip install torch torch_geometric
+# optional
+pip install faiss-cpu      # needed by AFGRL's PositiveMiner
+pip install umap-learn matplotlib seaborn  # for visualization callbacks
+```
+
+Then clone this repo and run from the root:
 
 ```bash
 pytest tests/ -v
 ```
 
-82 test, tutti i modelli coperti. AFGRL viene saltato automaticamente se `faiss-cpu`
-non è installato.
+All 8 model test suites should pass. AFGRL tests are auto-skipped if `faiss-cpu` is missing.
 
-## Struttura
+## Project Structure
 
 ```
 src/
-├── core/          # ABC: BaseModel, BaseSSLModel, Callback, Registry
-├── encoders/      # GCN, GIN, Transformer
-├── models/        # DGI, GraphCL, BGRL, AFGRL, GraphDINO, VICReg, BarlowTwins, Supervised
-├── nn/            # MLP, DINOHead, norm, pooling
-├── augmentation/  # functional, transforms, compose
-├── losses/        # nt_xent, dino, vicreg, barlow, regression
-├── evaluation/    # linear_probe, knn, visualization
-├── training/      # DINOTrainer, callbacks
-├── data/          # DataModule
-├── utils/         # ema, schedulers, positive_miner
-└── config/        # schema.py (dataclass validation), load.py
+├── core/           # BaseSSLModel, Callback, Registry, Protocol interfaces
+├── config/         # Dataclass schemas + YAML loading
+├── encoders/       # GCN, GIN, Transformer (registry-based)
+├── models/         # All SSL models + supervised baseline
+├── losses/         # NT-Xent, DINO, VICReg, Barlow Twins, cosine regression
+├── augmentation/   # 7 transforms, compose(), MultiView
+├── nn/             # MLP, Projector, DINOHead, pooling utilities
+├── evaluation/     # Linear probing (LogRegEvaluator), KNN, UMAP
+├── training/       # DINOTrainer + callbacks (LinearEval, Visualization, EmbeddingLogger)
+├── data/           # DataModule (wraps PyG datasets, provides loaders)
+└── utils/          # EMA, cosine schedulers, PositiveMiner
 ```
 
-## Note su canonic-pyg/
+## Key Design Choices
 
-Contiene implementazioni di riferimento BGRL e GraphDINO nello stile nativo PyG
-(pensate per una futura PR upstream). Non è parte della libreria principale.
+- **Hook-driven training.** The trainer calls `post_backward()` and `post_step()` at fixed points in the loop. Models use these to do things like freeze prototype gradients (GraphDINO) or update the EMA teacher (BGRL, AFGRL).
+- **Protected-node augmentations.** When using `NeighborLoader` for mini-batch training, seed nodes are protected from `node_drop` so the loss stays valid.
+- **Registry pattern.** Encoders and augmentations are registered by name (`@ENCODERS.register("gin")`), so swapping them is a one-line config change.
+
+## About `canonic-pyg/`
+
+Legacy reference implementations of BGRL and GraphDINO in vanilla PyG style. Not part of the library — kept around for potential upstream contributions.
+
+## Acknowledgments
+
+Developed at [NECSTLab](https://necst.it), Politecnico di Milano.
